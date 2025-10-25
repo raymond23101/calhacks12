@@ -10,8 +10,15 @@ import numpy as np
 import time
 
 def create_depth_pipeline():
-    """Create OAK-D pipeline for stereo depth"""
+    """Create OAK-D pipeline for stereo depth and RGB"""
     pipeline = dai.Pipeline()
+    
+    # Create RGB camera
+    cam_rgb = pipeline.create(dai.node.ColorCamera)
+    cam_rgb.setPreviewSize(640, 400)  # Match depth resolution aspect ratio
+    cam_rgb.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
+    cam_rgb.setInterleaved(False)
+    cam_rgb.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
     
     # Create stereo depth nodes
     mono_left = pipeline.create(dai.node.MonoCamera)
@@ -35,7 +42,11 @@ def create_depth_pipeline():
     mono_left.out.link(stereo.left)
     mono_right.out.link(stereo.right)
     
-    # Create output
+    # Create outputs
+    xout_rgb = pipeline.create(dai.node.XLinkOut)
+    xout_rgb.setStreamName("rgb")
+    cam_rgb.preview.link(xout_rgb.input)
+    
     xout_depth = pipeline.create(dai.node.XLinkOut)
     xout_depth.setStreamName("depth")
     stereo.depth.link(xout_depth.input)
@@ -88,7 +99,8 @@ def main():
     pipeline = create_depth_pipeline()
     device = dai.Device(pipeline)
     
-    # Get output queue
+    # Get output queues
+    rgb_queue = device.getOutputQueue(name="rgb", maxSize=4, blocking=False)
     depth_queue = device.getOutputQueue(name="depth", maxSize=4, blocking=False)
     
     print("✓ Camera initialized successfully!")
@@ -96,9 +108,15 @@ def main():
     
     frame_count = 0
     start_time = time.time()
+    rgb_frame = None
     
     try:
         while True:
+            # Get RGB frame
+            if rgb_queue.has():
+                rgb_data = rgb_queue.get()
+                rgb_frame = rgb_data.getCvFrame()
+            
             # Get depth frame
             if depth_queue.has():
                 depth_data = depth_queue.get()
@@ -115,25 +133,53 @@ def main():
                 print(f"\r[Frame {frame_count:5d} | FPS: {fps:6.2f}]", end=" ")
                 print(depth_sums.astype(np.int64))
                 
-                # Optional: Visualize depth map
-                # Normalize depth for visualization
-                depth_normalized = cv2.normalize(depth_frame, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
-                depth_colored = cv2.applyColorMap(depth_normalized, cv2.COLORMAP_JET)
-                
-                # Draw grid lines on visualization
-                height, width = depth_frame.shape
-                region_height = height // 2
-                region_width = width // 6
-                
-                # Draw horizontal line
-                cv2.line(depth_colored, (0, region_height), (width, region_height), (255, 255, 255), 2)
-                
-                # Draw vertical lines
-                for i in range(1, 6):
-                    x = i * region_width
-                    cv2.line(depth_colored, (x, 0), (x, height), (255, 255, 255), 2)
-                
-                cv2.imshow('Depth Grid (2x6)', depth_colored)
+                # Visualize: Overlay depth on RGB
+                if rgb_frame is not None:
+                    # Normalize depth for visualization
+                    depth_normalized = cv2.normalize(depth_frame, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+                    depth_colored = cv2.applyColorMap(depth_normalized, cv2.COLORMAP_JET)
+                    
+                    # Resize depth to match RGB frame size if needed
+                    if depth_colored.shape != rgb_frame.shape:
+                        depth_colored = cv2.resize(depth_colored, (rgb_frame.shape[1], rgb_frame.shape[0]))
+                    
+                    # Blend RGB with depth heatmap (50% overlay)
+                    overlay = cv2.addWeighted(rgb_frame, 0.5, depth_colored, 0.5, 0)
+                    
+                    # Draw grid lines on overlay
+                    height, width = overlay.shape[:2]
+                    region_height = height // 2
+                    region_width = width // 6
+                    
+                    # Draw horizontal line
+                    cv2.line(overlay, (0, region_height), (width, region_height), (255, 255, 255), 2)
+                    
+                    # Draw vertical lines
+                    for i in range(1, 6):
+                        x = i * region_width
+                        cv2.line(overlay, (x, 0), (x, height), (255, 255, 255), 2)
+                    
+                    # Add text labels for grid cells
+                    for row in range(2):
+                        for col in range(6):
+                            x = col * region_width + region_width // 2
+                            y = row * region_height + region_height // 2
+                            depth_value = depth_sums[row, col] / 1000000  # Convert to millions for readability
+                            text = f"{depth_value:.1f}M"
+                            
+                            # Add background rectangle for text
+                            text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)[0]
+                            cv2.rectangle(overlay, 
+                                        (x - text_size[0]//2 - 5, y - text_size[1]//2 - 5),
+                                        (x + text_size[0]//2 + 5, y + text_size[1]//2 + 5),
+                                        (0, 0, 0), -1)
+                            
+                            # Draw text
+                            cv2.putText(overlay, text, 
+                                      (x - text_size[0]//2, y + text_size[1]//2),
+                                      cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+                    
+                    cv2.imshow('RGB + Depth Overlay (2x6 Grid)', overlay)
             
             # Check for quit
             key = cv2.waitKey(1) & 0xFF
