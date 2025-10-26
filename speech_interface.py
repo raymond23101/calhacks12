@@ -78,16 +78,31 @@ class SpeechInterface:
                 
                 # Play audio using pygame
                 print(f"[SPEECH] Playing audio...")
-                pygame.mixer.init()
-                pygame.mixer.music.load(temp_file)
-                pygame.mixer.music.play()
-                
-                # Wait for audio to finish
-                while pygame.mixer.music.get_busy():
-                    pygame.time.Clock().tick(10)
-                
-                # Cleanup
-                pygame.mixer.quit()
+                try:
+                    # Ensure pygame mixer is properly initialized
+                    if pygame.mixer.get_init() is None:
+                        pygame.mixer.pre_init(frequency=22050, size=-16, channels=2, buffer=512)
+                        pygame.mixer.init()
+                    
+                    pygame.mixer.music.load(temp_file)
+                    pygame.mixer.music.play()
+                    
+                    # Wait for audio to finish
+                    while pygame.mixer.music.get_busy():
+                        pygame.time.Clock().tick(10)
+                    
+                    # Don't quit mixer - keep it alive for next use
+                    
+                except pygame.error as e:
+                    print(f"[SPEECH] Pygame audio error: {e}")
+                    print(f"[SPEECH] Falling back to system audio...")
+                    # Fallback to system audio
+                    import subprocess
+                    try:
+                        subprocess.run(['afplay', temp_file], check=True)
+                        print(f"[SPEECH] ✓ System audio successful")
+                    except Exception as fallback_error:
+                        print(f"[SPEECH] System audio also failed: {fallback_error}")
                 try:
                     os.remove(temp_file)
                 except:
