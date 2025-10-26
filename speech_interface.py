@@ -50,6 +50,10 @@ class SpeechInterface:
         self.listen_thread = None
         self.callback = None
         
+        # Speech interruption control
+        self.is_speaking = False
+        self.stop_speech_flag = False
+        
     def speak(self, text, blocking=True):
         """
         Speak text through speaker using Fish Audio TTS (Emma Watson voice)
@@ -60,6 +64,13 @@ class SpeechInterface:
         """
         try:
             if blocking:
+                # Check if we should skip (interrupted before starting)
+                if self.stop_speech_flag:
+                    print(f"[SPEECH] Skipped (interrupted)")
+                    self.stop_speech_flag = False
+                    return
+                
+                self.is_speaking = True
                 print(f"[SPEECH] Text to speak ({len(text)} chars): '{text[:80]}...'")
                 
                 import requests
@@ -71,8 +82,7 @@ class SpeechInterface:
                 FISH_AUDIO_API_KEY = "b5f66e1290844c56b8095b053acad4c1"
                 FISH_AUDIO_URL = "https://api.fish.audio/v1/tts"
                 
-                # Emma Watson voice reference ID (you may need to adjust this)
-                # Common voice IDs: try "emma-watson" or check Fish Audio docs for exact ID
+                # Emma Watson voice reference ID
                 VOICE_REFERENCE = "41db41746b9c4bd18053c2bfc213b476"  # Emma Watson voice ID
                 
                 # Generate speech audio file
@@ -95,7 +105,15 @@ class SpeechInterface:
                 
                 if response.status_code != 200:
                     print(f"[SPEECH] Fish Audio API error: {response.status_code} - {response.text}")
+                    self.is_speaking = False
                     raise Exception(f"Fish Audio API error: {response.status_code}")
+                
+                # Check again before playing
+                if self.stop_speech_flag:
+                    print(f"[SPEECH] Interrupted before playback")
+                    self.is_speaking = False
+                    self.stop_speech_flag = False
+                    return
                 
                 # Save to temporary file
                 with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as fp:
@@ -113,8 +131,13 @@ class SpeechInterface:
                     pygame.mixer.music.load(temp_file)
                     pygame.mixer.music.play()
                     
-                    # Wait for audio to finish
+                    # Wait for audio to finish, but check for interruption
                     while pygame.mixer.music.get_busy():
+                        if self.stop_speech_flag:
+                            print(f"[SPEECH] ⏹️  Interrupted during playback!")
+                            pygame.mixer.music.stop()
+                            self.stop_speech_flag = False
+                            break
                         pygame.time.Clock().tick(10)
                     
                     # Don't quit mixer - keep it alive for next use
@@ -134,6 +157,7 @@ class SpeechInterface:
                 except:
                     pass
                 
+                self.is_speaking = False
                 print(f"[SPEECH] ✓ Speech completed")
             else:
                 # Non-blocking speech
@@ -149,6 +173,22 @@ class SpeechInterface:
         """Internal method for non-blocking speech"""
         self.tts_engine.say(text)
         self.tts_engine.runAndWait()
+    
+    def stop_speech(self):
+        """
+        Immediately stop ongoing speech
+        Called when wake word is detected
+        """
+        print(f"[SPEECH] 🛑 Stop requested")
+        self.stop_speech_flag = True
+        
+        # Stop pygame audio if playing
+        try:
+            import pygame
+            if pygame.mixer.get_init() is not None:
+                pygame.mixer.music.stop()
+        except:
+            pass
     
     def listen_once(self, timeout=10, phrase_time_limit=10) -> Optional[str]:
         """
@@ -239,7 +279,10 @@ class SpeechInterface:
                 if self.use_wake_word:
                     # Check for wake word in the text
                     if self.wake_word in text:
-                        print(f"✓ Wake word detected!")
+                        print(f"🎯 WAKE WORD DETECTED! Stopping speech...")
+                        
+                        # IMMEDIATELY stop any ongoing speech - ONLY when wake word detected
+                        self.stop_speech()
                         
                         # Remove wake word and process the rest as the question
                         # Handle variations: "assistant what's the weather", "hey assistant what's the weather"
@@ -263,16 +306,18 @@ class SpeechInterface:
                         self.callback(text)
                         
             except sr.WaitTimeoutError:
-                # Normal timeout, continue listening
+                # Timeout - no speech detected, continue listening silently
                 continue
             except sr.UnknownValueError:
-                # Could not understand, continue silently
+                # Audio captured but couldn't understand, continue silently
                 continue
             except sr.RequestError as e:
                 print(f"❌ Speech recognition service error: {e}")
                 time.sleep(1)
             except Exception as e:
                 print(f"❌ Unexpected error in listening loop: {e}")
+                import traceback
+                traceback.print_exc()
                 time.sleep(1)
     
     def stop_listening(self):

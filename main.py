@@ -104,11 +104,11 @@ def auto_announce_objects_async():
         if rgb_frame is not None:
             depth_grid = camera.getDepthGrid(rows=2, cols=6)
             
-            # Get very concise object detection with distance
+            # Get very concise object detection with distance (~25 words)
             response = ai.analyze_scene(
                 image=rgb_frame,
                 depth_grid=depth_grid,
-                prompt="Identify important objects for navigation (people, obstacles, vehicles, animals, moving objects, hazards). For each object: name, position (left/center/right), distance in feet. Use depth grid values in FEET. Format: object position distance feet. No symbols, no numbering, plain text only."
+                prompt="Identify important objects for navigation (people, obstacles, vehicles, animals, moving objects, hazards). For each object: name, position (left/center/right), distance in feet. Use depth grid values in FEET. Format: object position distance feet. No symbols, no numbering, plain text only. Try to limit the amount of objects to 3 or less, preferably less"
             )
             
             if response:
@@ -162,11 +162,11 @@ def handle_voice_command_async(text):
                 detail_keywords = ['describe', 'detailed', 'tell me about', 'explain', 'what do you see']
                 wants_detail = any(keyword in text.lower() for keyword in detail_keywords)
                 
-                # Always include object detection, location, and depth in responses
+                # Answer the question directly, only describe scene if asked
                 if wants_detail:
-                    prompt = f"Focus on navigation-relevant objects (people, obstacles, vehicles, animals, hazards). Use depth grid in FEET for distances. Answer: {text}. No symbols or special characters, plain text only."
+                    prompt = f"Answer this question: {text}. If the question asks about the scene or surroundings, describe navigation objects with positions and distances in feet. Keep it concise and to the point."
                 else:
-                    prompt = f"Focus on navigation-relevant objects (people, obstacles, vehicles, animals, hazards). Use depth grid in FEET for distances. Be brief: {text}. No symbols, plain text only."
+                    prompt = f"Answer this question directly and briefly: {text}. Only describe the scene if the question specifically asks about what you see or surroundings. Keep it concise and to the point."
                 
                 response = ai.analyze_scene(
                     image=rgb_frame,
@@ -196,7 +196,7 @@ def handle_voice_command_async(text):
             if wants_detail:
                 question = f"{text}"
             else:
-                question = f"Answer concisely: {text}"
+                question = f"Answer briefly and naturally: {text}"
             
             response = ai.ask_with_context(
                 question=question,
@@ -347,6 +347,13 @@ def main():
         callback=handle_voice_command,
         use_wake_word=True
     )
+    
+    # Give the listening thread a moment to start
+    time.sleep(1)
+    print()
+    print("=" * 70)
+    print("🎤 LISTENING FOR 'ASSISTANT' - Speech will ONLY stop for this word")
+    print("=" * 70)
     
     # Main loop - display camera feed or just keep listening
     try:
