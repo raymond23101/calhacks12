@@ -23,7 +23,8 @@ Complete vision assistant system with camera, AI, and voice interaction for acce
 - **Conversational Q&A:** Natural language interaction with history
 
 ### 🎙️ Voice Interface (`speech_interface.py`)
-- **Text-to-Speech (TTS):** Speaks responses through speaker
+- **Text-to-Speech (TTS):** Google Text-to-Speech (gTTS) with pygame audio playback
+- **Cross-Platform Audio:** Works on macOS, Linux, and Windows
 - **Speech-to-Text (STT):** Listens to user through microphone
 - **Wake Word Detection:** Activates on "assistant" or custom word
 - **Continuous Listening:** Background voice interaction
@@ -45,7 +46,8 @@ python-dotenv>=1.0.0
 Pillow>=10.0.0
 
 # Speech
-pyttsx3>=2.90
+gTTS>=2.5.0                # Google Text-to-Speech
+pygame>=2.6.0              # Audio playback
 SpeechRecognition>=3.10.0
 PyAudio>=0.2.13
 ```
@@ -269,6 +271,26 @@ The system applies advanced post-processing for clean, stable depth:
 
 The system automatically detects USB connection speed. For best performance, connect to a **USB 3.0** (blue) port. USB 2.0 connections will show a warning and may have reduced FPS.
 
+## Test Utilities
+
+### Check Environment Setup
+```bash
+python check_env.py
+```
+Verifies your `.env` file configuration and API keys.
+
+### Test Speaker/TTS
+```bash
+python test_speaker.py
+```
+Tests text-to-speech with various phrases to verify audio output.
+
+### Test USB Microphone
+```bash
+python test_usb_mic.py
+```
+Tests USB microphone input with speech recognition.
+
 ## Troubleshooting
 
 **Camera not detected:**
@@ -285,6 +307,12 @@ The system automatically detects USB connection speed. For best performance, con
 - Already optimized with temporal + spatial + speckle filtering
 - Adjust `min_depth` / `max_depth` to focus on target range
 - Ensure good lighting conditions
+
+**Speech not working:**
+- Run `python test_speaker.py` to verify audio output
+- Check system volume and output device settings
+- Ensure internet connection (gTTS requires online access)
+- Test microphone with `python test_usb_mic.py`
 
 ## License
 

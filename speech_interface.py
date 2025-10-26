@@ -52,20 +52,57 @@ class SpeechInterface:
         
     def speak(self, text, blocking=True):
         """
-        Speak text through speaker
+        Speak text through speaker using gTTS (Google Text-to-Speech)
         
         Args:
             text: Text to speak
             blocking: Wait for speech to complete (default: True)
         """
-        if blocking:
-            self.tts_engine.say(text)
-            self.tts_engine.runAndWait()
-        else:
-            # Non-blocking speech
-            thread = threading.Thread(target=self._speak_async, args=(text,))
-            thread.daemon = True
-            thread.start()
+        try:
+            if blocking:
+                print(f"[SPEECH] Text to speak ({len(text)} chars): '{text[:80]}...'")
+                
+                from gtts import gTTS
+                import pygame
+                import tempfile
+                import os
+                
+                # Generate speech audio file
+                print(f"[SPEECH] Generating audio...")
+                tts = gTTS(text=text, lang='en', slow=False)
+                
+                # Save to temporary file
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as fp:
+                    temp_file = fp.name
+                    tts.save(temp_file)
+                
+                # Play audio using pygame
+                print(f"[SPEECH] Playing audio...")
+                pygame.mixer.init()
+                pygame.mixer.music.load(temp_file)
+                pygame.mixer.music.play()
+                
+                # Wait for audio to finish
+                while pygame.mixer.music.get_busy():
+                    pygame.time.Clock().tick(10)
+                
+                # Cleanup
+                pygame.mixer.quit()
+                try:
+                    os.remove(temp_file)
+                except:
+                    pass
+                
+                print(f"[SPEECH] ✓ Speech completed")
+            else:
+                # Non-blocking speech
+                thread = threading.Thread(target=self._speak_async, args=(text,))
+                thread.daemon = True
+                thread.start()
+        except Exception as e:
+            print(f"[ERROR] Speech failed: {e}")
+            import traceback
+            traceback.print_exc()
     
     def _speak_async(self, text):
         """Internal method for non-blocking speech"""

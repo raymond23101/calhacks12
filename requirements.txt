@@ -12,6 +12,7 @@ python-dotenv>=1.0.0
 Pillow>=10.0.0
 
 # Speech
-pyttsx3>=2.90
+gTTS>=2.5.0                # Google Text-to-Speech
+pygame>=2.6.0              # Audio playback
 SpeechRecognition>=3.10.0
 PyAudio>=0.2.13
