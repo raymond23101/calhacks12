@@ -59,9 +59,9 @@ class MultiAI:
             api_key=api_key,
         )
         
-        # Default to Claude 3.5 Sonnet via OpenRouter
-        self.model = model or "anthropic/claude-3.5-sonnet"
-        self.max_tokens = 1024
+        # Default to preset model via OpenRouter
+        self.model = model or "@preset/calhacks-12"
+        self.max_tokens = 2048  # Allow longer responses when needed
     
     def _init_claude(self, model: Optional[str]):
         """Initialize Anthropic Claude"""
@@ -73,7 +73,7 @@ class MultiAI:
         
         self.client = anthropic.Anthropic(api_key=api_key)
         self.model = model or "claude-3-5-sonnet-20241022"
-        self.max_tokens = 1024
+        self.max_tokens = 2048  # Allow longer responses when needed
     
     def _init_gemini(self, model: Optional[str]):
         """Initialize Google Gemini"""
@@ -97,7 +97,7 @@ class MultiAI:
         
         self.client = openai.OpenAI(api_key=api_key)
         self.model = model or "gpt-4o"
-        self.max_tokens = 1024
+        self.max_tokens = 2048  # Allow longer responses when needed
     
     def encode_image(self, image: np.ndarray, quality=85) -> str:
         """
@@ -137,7 +137,7 @@ class MultiAI:
         # Add depth context if provided
         full_prompt = prompt
         if depth_grid is not None:
-            depth_info = f"\n\nDepth grid (2 rows x 6 columns, values in mm):\n{depth_grid}"
+            depth_info = f"\n\nDepth grid (2 rows x 6 columns, values in FEET):\n{depth_grid}"
             full_prompt += depth_info
         
         # Route to appropriate provider

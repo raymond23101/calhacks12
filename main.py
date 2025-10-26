@@ -9,6 +9,7 @@ Main Vision Assistant - Complete Integration
 from oak_camera import OAKCamera
 from multi_ai import MultiAI
 from speech_interface import SpeechInterface
+from motor_controller import MotorController
 import cv2
 import numpy as np
 import time
@@ -18,11 +19,27 @@ import threading
 camera = None
 ai = None
 speech = None
+motors = None
 processing = False
 last_analysis_time = 0
 last_auto_announcement = 0
 ANALYSIS_COOLDOWN = 3  # Seconds between auto-analyses
 AUTO_ANNOUNCEMENT_INTERVAL = 5  # Seconds between automatic announcements
+
+def clean_text_for_speech(text):
+    """Remove lexicographic symbols and formatting from text for speech"""
+    if text is None:
+        return ""
+    
+    # Remove common symbols that shouldn't be spoken
+    symbols_to_remove = ['*', '#', '_', '~', '`', '^', '{', '}', '[', ']', '<', '>', '|', '\\']
+    for symbol in symbols_to_remove:
+        text = text.replace(symbol, '')
+    
+    # Remove multiple spaces
+    text = ' '.join(text.split())
+    
+    return text.strip()
 
 def create_status_overlay(frame, status_text, color=(0, 255, 0)):
     """Add status text overlay to frame"""
@@ -66,15 +83,45 @@ def create_depth_heatmap(depth_grid):
             # Grid lines
             cv2.rectangle(heatmap, (x1, y1), (x2, y2), (255, 255, 255), 2)
             
-            # Value text
-            text = f"{val/1000000:.1f}M"
+            # Value text (in feet)
+            text = f"{val:.1f}ft"
             cv2.putText(heatmap, text, (x1 + 10, y1 + 55),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
     
     return heatmap
 
+def auto_announce_objects_async():
+    """Asynchronously announce detected objects in background thread"""
+    global camera, ai, speech, last_auto_announcement
+    
+    try:
+        print("\n🔔 Auto-announcing objects...")
+        
+        # Capture current frame
+        frames = camera.getFrames(["rgb"])
+        rgb_frame = frames[0]
+        
+        if rgb_frame is not None:
+            depth_grid = camera.getDepthGrid(rows=2, cols=6)
+            
+            # Get very concise object detection with distance
+            response = ai.analyze_scene(
+                image=rgb_frame,
+                depth_grid=depth_grid,
+                prompt="Identify important objects for navigation (people, obstacles, vehicles, animals, moving objects, hazards). For each object: name, position (left/center/right), distance in feet. Use depth grid values in FEET. Format: object position distance feet. No symbols, no numbering, plain text only."
+            )
+            
+            if response:
+                clean_response = clean_text_for_speech(response)
+                print(f"🔔 Auto-announcement: {clean_response}")
+                speech.speak(clean_response)
+                last_auto_announcement = time.time()
+                
+    except Exception as e:
+        print(f"❌ Auto-announcement error: {e}")
+
 def auto_announce_objects():
-    """Automatically announce detected objects every few seconds"""
+    """Check if it's time for auto-announcement and trigger async if needed"""
     global camera, ai, speech, processing, last_auto_announcement
     
     current_time = time.time()
@@ -83,44 +130,16 @@ def auto_announce_objects():
     if (current_time - last_auto_announcement >= AUTO_ANNOUNCEMENT_INTERVAL and 
         not processing and camera is not None and ai is not None and speech is not None):
         
-        try:
-            print("\n🔔 Auto-announcing objects...")
-            
-            # Capture current frame
-            frames = camera.getFrames(["rgb"])
-            rgb_frame = frames[0]
-            
-            if rgb_frame is not None:
-                depth_grid = camera.getDepthGrid(rows=2, cols=6)
-                
-                # Get very concise object detection with distance
-                response = ai.analyze_scene(
-                    image=rgb_frame,
-                    depth_grid=depth_grid,
-                    prompt="Identify visible objects in the image. For each major object, list: {type of object}, {relative position in frame}, {distance} feet. Use format: 'object, position, X feet'. Do not number the objects. If image is unclear, describe what you can see. Keep under 25 words."
-                )
-                
-                if response:
-                    # Limit response length for auto-announcements
-                    if len(response) > 50:
-                        response = response[:50].rsplit('.', 1)[0] + '.'
-                    
-                    print(f"🔔 Auto-announcement: {response}")
-                    speech.speak(response)
-                    last_auto_announcement = current_time
-                    
-        except Exception as e:
-            print(f"❌ Auto-announcement error: {e}")
+        # Update timestamp immediately to prevent multiple triggers
+        last_auto_announcement = current_time
+        
+        # Run announcement in background thread (non-blocking)
+        announcement_thread = threading.Thread(target=auto_announce_objects_async, daemon=True)
+        announcement_thread.start()
 
-def handle_voice_command(text):
-    """Handle voice commands"""
-    global camera, ai, speech, processing, last_analysis_time, wake_word_detected
-    
-    if processing:
-        print("⏳ Still processing previous request...")
-        return
-    
-    processing = True
+def handle_voice_command_async(text):
+    """Process voice command asynchronously"""
+    global camera, ai, speech, processing, last_analysis_time
     
     try:
         print(f"\n📝 You asked: '{text}'")
@@ -145,9 +164,9 @@ def handle_voice_command(text):
                 
                 # Always include object detection, location, and depth in responses
                 if wants_detail:
-                    prompt = f"Based on the image and depth data, provide a detailed description: {text}"
+                    prompt = f"Focus on navigation-relevant objects (people, obstacles, vehicles, animals, hazards). Use depth grid in FEET for distances. Answer: {text}. No symbols or special characters, plain text only."
                 else:
-                    prompt = f"Based on the image and depth data, answer very briefly (under 15 words): {text}"
+                    prompt = f"Focus on navigation-relevant objects (people, obstacles, vehicles, animals, hazards). Use depth grid in FEET for distances. Be brief: {text}. No symbols, plain text only."
                 
                 response = ai.analyze_scene(
                     image=rgb_frame,
@@ -156,13 +175,10 @@ def handle_voice_command(text):
                 )
                 
                 if response:
-                    # Limit response length
-                    if len(response) > 200:
-                        response = response[:200].rsplit('.', 1)[0] + '.'
-                    
-                    print(f"\n💬 AI: {response}\n")
-                    print(f"[DEBUG] About to speak: '{response}'")
-                    speech.speak(response)
+                    clean_response = clean_text_for_speech(response)
+                    print(f"\n💬 AI: {clean_response}\n")
+                    print(f"[DEBUG] About to speak: '{clean_response}'")
+                    speech.speak(clean_response)
                     print(f"[DEBUG] Speech call completed")
                 else:
                     speech.speak("I couldn't analyze the scene")
@@ -178,9 +194,9 @@ def handle_voice_command(text):
             wants_detail = any(keyword in text.lower() for keyword in detail_keywords)
             
             if wants_detail:
-                question = f"Provide a detailed response: {text}"
+                question = f"{text}"
             else:
-                question = f"Answer very briefly (under 15 words): {text}"
+                question = f"Answer concisely: {text}"
             
             response = ai.ask_with_context(
                 question=question,
@@ -190,13 +206,10 @@ def handle_voice_command(text):
             )
             
             if response:
-                # Limit response length
-                if len(response) > 200:
-                    response = response[:200].rsplit('.', 1)[0] + '.'
-                
-                print(f"\n💬 AI: {response}\n")
-                print(f"[DEBUG] About to speak (no camera): '{response}'")
-                speech.speak(response)
+                clean_response = clean_text_for_speech(response)
+                print(f"\n💬 AI: {clean_response}\n")
+                print(f"[DEBUG] About to speak (no camera): '{clean_response}'")
+                speech.speak(clean_response)
                 print(f"[DEBUG] Speech call completed (no camera)")
             else:
                 speech.speak("I couldn't generate a response")
@@ -210,8 +223,22 @@ def handle_voice_command(text):
         last_auto_announcement = time.time()  # Reset timer to resume auto-announcements
         print("✅ Ready for next command")
 
+def handle_voice_command(text):
+    """Handle voice command by starting async processing"""
+    global processing
+    
+    if processing:
+        print("⏳ Still processing previous request...")
+        return
+    
+    processing = True
+    
+    # Run in background thread to avoid blocking camera loop
+    command_thread = threading.Thread(target=handle_voice_command_async, args=(text,), daemon=True)
+    command_thread.start()
+
 def main():
-    global camera, ai, speech
+    global camera, ai, speech, motors
     
     print("=" * 70)
     print("COMPLETE VISION ASSISTANT")
@@ -235,27 +262,9 @@ def main():
     # Initialize AI
     print("\nInitializing AI...")
     try:
-        models_to_try = [
-            "openai/gpt-4o-mini",
-            "openai/gpt-4o",
-            "anthropic/claude-3-haiku",
-        ]
-        
-        for model in models_to_try:
-            try:
-                print(f"  Trying model: {model}")
-                ai = MultiAI(provider="openrouter", model=model)
-                print(f"✓ AI ready (using {model})")
-                break
-            except Exception as e:
-                print(f"  ✗ {model} failed")
-                continue
-        
-        if not ai:
-            print("❌ No AI models available")
-            if camera:
-                camera.stop()
-            return
+        # Use the preset model configured in multi_ai.py (defaults to @preset/calhacks-12)
+        ai = MultiAI(provider="openrouter")
+        print(f"✓ AI ready (using {ai.model})")
         
     except Exception as e:
         print(f"❌ AI initialization failed: {e}")
@@ -281,6 +290,21 @@ def main():
             camera.stop()
         return
     
+    # Initialize Motor Controller
+    print("\nInitializing haptic motors...")
+    try:
+        motors = MotorController(
+            grid_shape=(2, 6),
+            min_distance=1.6,  # 1.6 feet = max intensity (~0.5m)
+            max_distance=10.0,  # 10 feet = no activation (~3m)
+            area_threshold=0.2  # 20% coverage required
+        )
+        print("✓ Motor controller ready (simulation mode)")
+    except Exception as e:
+        print(f"❌ Motor initialization failed: {e}")
+        print("  Continuing without haptic feedback...")
+        motors = None
+    
     # Welcome
     speech.speak("Vision assistant ready. Say assistant to interact with me.")
     
@@ -292,6 +316,8 @@ def main():
         print()
         print("📹 ALL questions will use live camera feed for context!")
         print("🔔 Objects will be automatically announced every 5 seconds!")
+        if motors:
+            print("🎮 Haptic motors active - intensity based on object proximity!")
         print()
         print("Controls:")
         print("  - Say 'assistant' + your question")
@@ -339,6 +365,10 @@ def main():
                 # Get depth grid
                 depth_grid = camera.getDepthGrid(rows=2, cols=6)
                 
+                # Update haptic motors based on depth grid
+                if motors is not None:
+                    motors.update_from_depth_grid(depth_grid, verbose=False)
+                
                 # Check for automatic object announcements
                 auto_announce_objects()
                 
@@ -358,12 +388,13 @@ def main():
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord('q'):
                     break
+        else:
             # Voice-only mode - just keep alive
             print("Running in voice-only mode (no camera)")
             print("Press Ctrl+C to quit")
             while True:
                 time.sleep(1)
-        
+    
     except KeyboardInterrupt:
         print("\n\n⏹️  Interrupted by user")
     
@@ -372,6 +403,9 @@ def main():
         speech.stop_listening()
         if camera:
             camera.stop()
+        if motors:
+            motors.disable_all_motors()
+            print("✓ Motors disabled")
         cv2.destroyAllWindows()
         speech.speak("Vision assistant shutting down")
         print("✓ Shutdown complete")

@@ -52,7 +52,7 @@ class SpeechInterface:
         
     def speak(self, text, blocking=True):
         """
-        Speak text through speaker using gTTS (Google Text-to-Speech)
+        Speak text through speaker using Fish Audio TTS (Emma Watson voice)
         
         Args:
             text: Text to speak
@@ -62,19 +62,45 @@ class SpeechInterface:
             if blocking:
                 print(f"[SPEECH] Text to speak ({len(text)} chars): '{text[:80]}...'")
                 
-                from gtts import gTTS
+                import requests
                 import pygame
                 import tempfile
                 import os
                 
+                # Fish Audio TTS API configuration
+                FISH_AUDIO_API_KEY = "b5f66e1290844c56b8095b053acad4c1"
+                FISH_AUDIO_URL = "https://api.fish.audio/v1/tts"
+                
+                # Emma Watson voice reference ID (you may need to adjust this)
+                # Common voice IDs: try "emma-watson" or check Fish Audio docs for exact ID
+                VOICE_REFERENCE = "41db41746b9c4bd18053c2bfc213b476"  # Emma Watson voice ID
+                
                 # Generate speech audio file
-                print(f"[SPEECH] Generating audio...")
-                tts = gTTS(text=text, lang='en', slow=False)
+                print(f"[SPEECH] Generating audio with Fish Audio (Emma Watson voice)...")
+                
+                headers = {
+                    "Authorization": f"Bearer {FISH_AUDIO_API_KEY}",
+                    "Content-Type": "application/json"
+                }
+                
+                payload = {
+                    "text": text,
+                    "reference_id": VOICE_REFERENCE,
+                    "format": "mp3",
+                    "mp3_bitrate": 128,
+                    "normalize": True
+                }
+                
+                response = requests.post(FISH_AUDIO_URL, json=payload, headers=headers, timeout=30)
+                
+                if response.status_code != 200:
+                    print(f"[SPEECH] Fish Audio API error: {response.status_code} - {response.text}")
+                    raise Exception(f"Fish Audio API error: {response.status_code}")
                 
                 # Save to temporary file
                 with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as fp:
                     temp_file = fp.name
-                    tts.save(temp_file)
+                    fp.write(response.content)
                 
                 # Play audio using pygame
                 print(f"[SPEECH] Playing audio...")

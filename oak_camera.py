@@ -89,6 +89,10 @@ class OAKCamera:
         print(f"Median filtering:   {median}")
         print()
         
+        # Depth grid temporal smoothing (noise reduction)
+        self.previous_depth_grid = None
+        self.depth_grid_alpha = 0.3  # EMA smoothing factor (0.3 = 70% old, 30% new)
+        
         # Create device and pipeline
         self._create_pipeline()
         
@@ -323,28 +327,39 @@ class OAKCamera:
         
         return self.FOCAL_LEN * self.BASELINE / dispVal
     
-    def getDepthGrid(self, rows=2, cols=6):
+    def getDepthGrid(self, rows=2, cols=6, min_cluster_pixels=15, depth_tolerance_feet=1.0):
         """
-        Get depth grid (sum of depth values in each region)
+        Get depth grid prioritizing closest objects with cluster validation
+        
+        Algorithm:
+        1. Find closest depth in region
+        2. Check if there's a cluster of similar depths (avoid noise)
+        3. If substantial cluster exists, use closest depth
+        4. Otherwise, fall back to average depth
         
         Args:
             rows: Number of rows (default 2)
             cols: Number of columns (default 6)
+            min_cluster_pixels: Minimum pixels for valid close object (default 15)
+            depth_tolerance_feet: Max depth difference for clustering (default 1.0 feet)
         
         Returns:
-            numpy array of shape (rows, cols) with summed depth values
+            numpy array of shape (rows, cols) with depth values in FEET
         """
-        frames = self.getFrames(["disparity_raw"])
-        disp = frames[0]
+        frames = self.getFrames(["depth"])
+        depth_frame = frames[0]
         
-        if disp is None:
-            return np.zeros((rows, cols), dtype=np.int64)
+        if depth_frame is None:
+            return np.zeros((rows, cols), dtype=np.float32)
         
-        h, w = disp.shape
+        h, w = depth_frame.shape[:2] if len(depth_frame.shape) == 3 else depth_frame.shape
         cell_h = h // rows
         cell_w = w // cols
         
-        grid = np.zeros((rows, cols), dtype=np.int64)
+        grid = np.zeros((rows, cols), dtype=np.float32)
+        
+        # Convert tolerance to millimeters for comparison
+        tolerance_mm = depth_tolerance_feet * 30.48 * 10.0  # feet -> cm -> mm
         
         for r in range(rows):
             for c in range(cols):
@@ -353,9 +368,54 @@ class OAKCamera:
                 x1 = c * cell_w
                 x2 = (c + 1) * cell_w if c < cols - 1 else w
                 
-                # Sum all depth values in this cell
-                cell = disp[y1:y2, x1:x2]
-                grid[r, c] = np.sum(cell, dtype=np.int64)
+                # Get depth values in this cell (depth frame is in millimeters)
+                if len(depth_frame.shape) == 3:
+                    cell = depth_frame[y1:y2, x1:x2, 0]  # Take first channel if 3D
+                else:
+                    cell = depth_frame[y1:y2, x1:x2]
+                
+                # Filter out invalid depth values (0 or very large)
+                valid_depths = cell[(cell > 0) & (cell < 65535)]
+                
+                if len(valid_depths) > 0:
+                    # Find minimum (closest) depth
+                    min_depth_mm = np.min(valid_depths)
+                    
+                    # Count pixels within tolerance of minimum depth (cluster detection)
+                    close_cluster = valid_depths[valid_depths <= (min_depth_mm + tolerance_mm)]
+                    cluster_size = len(close_cluster)
+                    
+                    # If substantial cluster exists at close depth, use it (avoids noise)
+                    if cluster_size >= min_cluster_pixels:
+                        # Use closest depth (prioritize small close objects)
+                        depth_mm = min_depth_mm
+                    else:
+                        # Fall back to average depth (no significant close object)
+                        depth_mm = np.mean(valid_depths)
+                    
+                    # Convert to feet
+                    depth_cm = depth_mm / 10.0  # mm to cm
+                    depth_feet = depth_cm / 30.48  # cm to feet
+                    grid[r, c] = depth_feet
+                else:
+                    grid[r, c] = 0.0  # No valid depth data
+        
+        # Apply temporal smoothing to reduce flickering
+        if self.previous_depth_grid is not None:
+            # Exponential Moving Average (EMA)
+            # new_value = alpha * current + (1 - alpha) * previous
+            # This smooths out rapid changes while still responding to real movement
+            for r in range(rows):
+                for c in range(cols):
+                    if grid[r, c] > 0:  # Only smooth valid readings
+                        if self.previous_depth_grid[r, c] > 0:  # Previous was valid
+                            # Smooth transition
+                            grid[r, c] = (self.depth_grid_alpha * grid[r, c] + 
+                                        (1 - self.depth_grid_alpha) * self.previous_depth_grid[r, c])
+                        # else: first valid reading, use as-is
+        
+        # Store for next frame
+        self.previous_depth_grid = grid.copy()
         
         return grid
     
