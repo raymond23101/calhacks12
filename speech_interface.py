@@ -109,9 +109,9 @@ class SpeechInterface:
         self.tts_engine.say(text)
         self.tts_engine.runAndWait()
     
-    def listen_once(self, timeout=5, phrase_time_limit=10) -> Optional[str]:
+    def listen_once(self, timeout=10, phrase_time_limit=10) -> Optional[str]:
         """
-        Listen for a single speech input
+        Listen for a single speech input with improved USB mic handling
         
         Args:
             timeout: Max seconds to wait for speech to start
@@ -122,26 +122,37 @@ class SpeechInterface:
         """
         try:
             with self.microphone as source:
-                print("Listening...")
+                # Quick ambient noise adjustment before listening
+                print("🎤 Adjusting for ambient noise...")
+                self.recognizer.adjust_for_ambient_noise(source, duration=0.5)
+                
+                print(f"🎤 Listening... (speak now, will auto-stop after {self.recognizer.pause_threshold}s of silence)")
+                print(f"   Energy threshold: {self.recognizer.energy_threshold:.0f}")
+                
                 audio = self.recognizer.listen(
                     source, 
                     timeout=timeout,
                     phrase_time_limit=phrase_time_limit
                 )
+                
+                print(f"✓ Audio captured ({len(audio.frame_data)} bytes)")
             
-            print("Processing speech...")
-            text = self.recognizer.recognize_google(audio)
-            print(f"Recognized: {text}")
+            print("🔄 Sending to Google Speech Recognition...")
+            text = self.recognizer.recognize_google(audio, show_all=False)
+            print(f"✓ Recognized: '{text}'")
             return text
             
         except sr.WaitTimeoutError:
-            print("No speech detected (timeout)")
+            print("⏱️  Timeout: No speech detected")
             return None
         except sr.UnknownValueError:
-            print("Could not understand audio")
+            print("❌ Could not understand audio (speak louder/clearer)")
             return None
         except sr.RequestError as e:
-            print(f"Speech recognition error: {e}")
+            print(f"❌ Speech recognition service error: {e}")
+            return None
+        except Exception as e:
+            print(f"❌ Unexpected error: {e}")
             return None
     
     def start_continuous_listening(self, callback: Callable[[str], None], 
@@ -170,31 +181,43 @@ class SpeechInterface:
     
     def _continuous_listen_loop(self):
         """Internal continuous listening loop"""
-        wake_word_active = False
-        
         while self.listening:
             try:
                 with self.microphone as source:
-                    # Short timeout for responsiveness
-                    audio = self.recognizer.listen(source, timeout=1, phrase_time_limit=10)
+                    # Adjust for ambient noise periodically
+                    if not hasattr(self, '_noise_adjusted'):
+                        self.recognizer.adjust_for_ambient_noise(source, duration=0.5)
+                        self._noise_adjusted = True
+                    
+                    # Listen with longer timeout
+                    audio = self.recognizer.listen(source, timeout=2, phrase_time_limit=10)
                 
                 text = self.recognizer.recognize_google(audio).lower()
+                print(f"[Heard: '{text}']")
                 
                 if self.use_wake_word:
-                    # Check for wake word
+                    # Check for wake word in the text
                     if self.wake_word in text:
-                        wake_word_active = True
-                        self.speak("Yes?", blocking=False)
-                        print(f"Wake word detected: '{self.wake_word}'")
-                        continue
-                    
-                    # Only process if wake word was said recently
-                    if wake_word_active:
-                        wake_word_active = False
-                        if self.callback:
-                            self.callback(text)
+                        print(f"✓ Wake word detected!")
+                        
+                        # Remove wake word and process the rest as the question
+                        # Handle variations: "assistant what's the weather", "hey assistant what's the weather"
+                        question = text
+                        for variant in [f"hey {self.wake_word}", self.wake_word, "hey"]:
+                            question = question.replace(variant, "").strip()
+                        
+                        # Remove leading punctuation/connecting words
+                        question = question.lstrip(",.!? ")
+                        
+                        if question:
+                            print(f"[Question: '{question}']")
+                            if self.callback:
+                                self.callback(question)
+                        else:
+                            # Just wake word, wait for follow-up
+                            print("(Waiting for question...)")
                 else:
-                    # No wake word required
+                    # No wake word required, process everything
                     if self.callback:
                         self.callback(text)
                         
@@ -202,14 +225,18 @@ class SpeechInterface:
                 # Normal timeout, continue listening
                 continue
             except sr.UnknownValueError:
-                # Could not understand, continue
+                # Could not understand, continue silently
                 continue
             except sr.RequestError as e:
-                print(f"Speech recognition error: {e}")
+                print(f"❌ Speech recognition service error: {e}")
                 time.sleep(1)
             except Exception as e:
-                print(f"Unexpected error in listening loop: {e}")
+                print(f"❌ Unexpected error in listening loop: {e}")
                 time.sleep(1)
+    
+    def stop_listening(self):
+        """Stop continuous listening (alias for stop_continuous_listening)"""
+        self.stop_continuous_listening()
     
     def stop_continuous_listening(self):
         """Stop continuous listening"""
